@@ -1,0 +1,35 @@
+{
+  "name": "@local/dsh-command-safety-guard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "本地命令安全拦截：pre-execute 钩子拦截灾难级破坏性命令（系统盘根目录/用户主目录全量删除、格式化），日常删除零干扰",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "icon.svg",
+    "locale/zh.json",
+    "locale/en.json",
+    "README.md"
+  ],
+  "keywords": [
+    "dsh",
+    "cordis",
+    "plugin",
+    "security",
+    "command",
+    "guard"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

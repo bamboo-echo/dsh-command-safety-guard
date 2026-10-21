@@ -1,0 +1,24 @@
+# command-safety-guard 的插入行与默认配置。
+#
+# 这个文件会被提交进版本库 —— 千万不要把真实 API Key 写在这里。
+# 需要 AI 复核时，把 mode 改成 'ai' 并填好 aiBaseUrl / aiApiKey / aiModel，
+# 建议在本地用 `git update-index --skip-worktree cordis.patch.yml` 锁住本文件后再填密钥。
+- insert:
+    - id: command-safety-guard
+      name: '@local/dsh-command-safety-guard'
+      config:
+        # 默认纯本地确定性规则：零依赖、零密钥、零延迟、结果可复现。
+        # 改成 'ai' 即变为「本地规则兜底 + 外接 AI 复核长尾命令」。
+        mode: local
+        action: deny          # deny = 直接拒绝 | ask = 弹窗确认后放行
+        # extraTools: ''      # 额外视作命令执行工具的工具名，逗号分隔
+        # extraPaths: ''      # 额外保护路径，逗号分隔，支持 * 通配符
+        # ---- 以下仅 mode: ai 时生效 ----
+        # aiBaseUrl: 'https://api.siliconflow.cn/v1'   # 或 http://127.0.0.1:1234/v1（本地模型）
+        # aiApiKey: ''          # 本地端点可留空；真实密钥切勿提交进版本库
+        # aiModel: 'Qwen/Qwen3-8B'
+        aiScope: longtail     # longtail = 只送本地规则看不见的 | risky = 全送
+        aiStructured: auto    # auto = 本地 json_schema / 远端 json_object
+        aiNoThink: true       # true = 全关思考（快） | false = 全开（准但慢） | auto = 分流
+        aiTimeoutMs: 60000
+        aiFailOpen: true      # AI 故障时放行（本地规则仍兜底）

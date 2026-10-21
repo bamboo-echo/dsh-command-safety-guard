@@ -1,0 +1,16 @@
+# ---- 本地测试语料（体积大且含生成痕迹，不进版本库）----
+样本*.txt
+样本*.json
+corpus/
+*.log
+
+# ---- 系统 / 编辑器 ----
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+
+# ---- Node ----
+node_modules/
+npm-debug.log*

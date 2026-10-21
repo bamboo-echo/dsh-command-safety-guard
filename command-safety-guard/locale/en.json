@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Command Safety Guard",
+    "description": "Intercepts catastrophic destructive commands (whole-drive or user-home deletion, formatting) before execution. Routine cleanup is never blocked. Local deterministic rules by default; optional OpenAI-compatible AI audit."
+  }
+}
