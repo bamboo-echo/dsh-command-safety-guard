@@ -5,27 +5,13 @@
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-/* ---- 最小 Schema 全局桩（真实环境由宿主注入 schemastery） ---- */
-const mkSchema = () => {
-  const s = {}
-  s.default = () => s
-  s.description = () => s
-  s.required = () => s
-  s.role = () => s
-  return s
-}
-globalThis.Schema = {
-  object: () => mkSchema(),
-  union: () => mkSchema(),
-  const: () => mkSchema(),
-  string: () => mkSchema(),
-  number: () => mkSchema(),
-  boolean: () => mkSchema(),
-}
-
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const BUNDLE = path.join(HERE, '..', 'command-safety-guard', 'index.js')
 const mod = await import(pathToFileURL(BUNDLE).href)
+
+// 走插件真实的 Config schema 做校验 + 补默认值，与宿主的激活路径一致。
+// 不再需要 Schema 全局桩：插件自己从 node_modules 解析 schemastery。
+const cfgOf = (c) => mod.Config(c)
 
 const logs = []
 const fakeCtx = {
@@ -46,14 +32,14 @@ const fakeCtx = {
 }
 const captured = {}
 
-mod.apply(fakeCtx, { mode: 'local', action: 'deny' })
+mod.apply(fakeCtx, cfgOf({ mode: 'local', action: 'deny' }))
 const listener = captured.listener
 if (!listener) throw new Error('未能捕获 tools/pre-execute 监听器')
 
 const run = async (command, { tool = 'mcp__fauxnix__bash', args, config } = {}) => {
   if (config) {
     captured.listener = null
-    mod.apply(fakeCtx, config)
+    mod.apply(fakeCtx, cfgOf(config))
   }
   const exec = { name: tool, arguments: args === undefined ? { command } : args }
   return captured.listener(exec, async () => ({ kind: 'allow' }))
@@ -422,11 +408,13 @@ mockFetch('{"verdict":"safe"}')
   else console.log('  aiExtraBody 透传: 已生效')
 }
 // 结构化输出：本地端点走 json_schema，远端走 json_object，off 则不带
+// 注意：aiNoThink=true 时本地端点走 prefill、不带 response_format，
+// 所以这里显式设 'auto' 来单独考察 response_format 的选择逻辑。
 {
   const fmtOf = async (cfg) => {
     mockFetch('{"verdict":"safe"}')
     fetchCalls.length = 0
-    await run(LONGTAIL, { config: { ...cfg, aiModel: `m-fmt-${Math.random()}` } })
+    await run(LONGTAIL, { config: { ...cfg, aiNoThink: 'auto', aiModel: `m-fmt-${Math.random()}` } })
     const sent = fetchCalls[0] && fetchCalls[0].body
     return sent && sent.response_format ? sent.response_format.type : null
   }

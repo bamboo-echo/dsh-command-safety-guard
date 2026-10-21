@@ -17,23 +17,14 @@
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-const mkSchema = () => {
-  const s = {}
-  s.default = () => s
-  s.description = () => s
-  s.required = () => s
-  s.role = () => s
-  return s
-}
-globalThis.Schema = {
-  object: () => mkSchema(), union: () => mkSchema(), const: () => mkSchema(),
-  string: () => mkSchema(), number: () => mkSchema(), boolean: () => mkSchema(),
-}
-
 const MODE = process.argv[2] === 'ai' ? 'ai' : 'local'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const BUNDLE = path.join(HERE, '..', 'command-safety-guard', 'index.js')
 const mod = await import(pathToFileURL(BUNDLE).href)
+
+// 走插件真实的 Config schema 做校验 + 补默认值，与宿主的激活路径一致。
+// 不再需要 Schema 全局桩：插件自己从 node_modules 解析 schemastery。
+const cfgOf = (c) => mod.Config(c)
 
 const logs = []
 const fakeCtx = {
@@ -56,7 +47,7 @@ const CFG = MODE === 'ai'
     }
   : { mode: 'local', action: 'deny' }
 
-mod.apply(fakeCtx, CFG)
+mod.apply(fakeCtx, cfgOf(CFG))
 
 const B64 = Buffer.from('Remove-Item -Recurse -Force C:\\Users\\alice', 'utf16le').toString('base64')
 const X = 'csg-nonexistent-user-xyz123'   // 不存在的用户，保证误放行也无害

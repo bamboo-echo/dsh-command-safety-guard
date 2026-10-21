@@ -114,38 +114,84 @@ config:
 
 ## 配置
 
-安装后插件会被登记进当前 profile（`<DSH 配置目录>/profiles/<profile>/package.json`
-的 `dsh.profile.bundles` + `link:` 依赖），本 bundle 自带的 `cordis.patch.yml`
-就是它的插入行，配置写在这里：
+插件导出了 `Config` schema，所以宿主会在两处用它：
+
+1. **激活时校验** —— 非法值直接报错，不再静默落到默认值：
+   ```
+   command-safety-guard: ValidationError: invalid config:
+     - $.mode expected "local" | "ai" but got "aii" (at mode)
+   ```
+2. **设置界面渲染表单** —— 「设置 → 插件」里可以直接改，`aiApiKey` 是掩码输入。
+
+`cordis.patch.yml` 只保留插入行，`config` 留空走全部默认值（`mode: local`，纯本地规则，零密钥）。
+改配置有两个去处：
 
 ```yaml
-# command-safety-guard/cordis.patch.yml
-# 完整配置项（示例为 SiliconFlow Qwen3-8B，全部关思考）
+# 1) profile 层（推荐，本机私有、不进版本库）：
+#    <DSH 配置目录>/profiles/<profile>/cordis.patch.yml
+- id: command-safety-guard
+  name: "@local/dsh-command-safety-guard"
+  config:
+    mode: ai
+    action: deny
+    aiBaseUrl: 'https://api.siliconflow.cn/v1'
+    aiApiKey: '在这里填，别提交进版本库'
+    aiModel: 'Qwen/Qwen3-8B'
+    aiScope: longtail
+    aiStructured: json_object
+    aiNoThink: true
+    aiTimeoutMs: 60000
+    aiFailOpen: true
+
+# 2) bundle 层（会进版本库，别放密钥）：
+#    command-safety-guard/cordis.patch.yml
 - insert:
     - id: command-safety-guard
       name: '@local/dsh-command-safety-guard'
-      config:
-        mode: ai              # local = 纯本地规则 | ai = 本地兜底 + AI 复核
-        action: deny          # deny = 直接拒绝 | ask = 弹窗确认后放行
-        extraTools: ''        # 额外视作命令执行工具的工具名，逗号分隔
-        extraPaths: ''        # 额外保护路径，逗号分隔，支持 * 通配符
-        aiBaseUrl: 'https://api.siliconflow.cn/v1'   # 或 http://127.0.0.1:1234/v1（本地模型）
-        aiApiKey: ''          # 本地端点可留空；⚠️ 真实密钥切勿提交进版本库
-        aiModel: 'Qwen/Qwen3-8B'
-        aiScope: longtail     # longtail = 只送本地规则看不见的 | risky = 全送
-        aiStructured: auto    # auto = 本地 json_schema / 远端 json_object
-        aiNoThink: true       # true = 全关思考（快） | false = 全开（准但慢） | auto = 分流
-        aiTimeoutMs: 60000
-        aiFailOpen: true      # AI 故障时放行（本地规则仍兜底）
+      config: {}
 ```
 
-> **密钥安全**：`cordis.patch.yml` 是受版本控制的文件。填了真实 `aiApiKey` 之后，
-> 建议执行 `git update-index --skip-worktree command-safety-guard/cordis.patch.yml`，
-> 让 git 忽略你本地的这份修改，密钥就不会被误提交。
+全部配置项与默认值：
 
-改完配置后，在插件管理里把 `command-safety-guard` 关一次再开（或重启 DSH）即可生效。
-也可以用 profile 的 `cordis.patch.yml` 追加一行 `- id: command-safety-guard` +
-`config:` 来覆盖（profile 补丁层后置生效）。
+| 配置项 | 默认 | 说明 |
+| --- | --- | --- |
+| `mode` | `local` | `local` = 纯本地确定性规则；`ai` = 本地兜底 + AI 复核 |
+| `action` | `deny` | `deny` = 直接拒绝；`ask` = 弹窗确认后放行 |
+| `extraTools` | `''` | 额外视作命令执行的工具名，逗号分隔 |
+| `extraPaths` | `''` | 额外保护的路径，逗号分隔，支持 `*` |
+| `aiBaseUrl` | `https://api.deepseek.com/v1` | OpenAI 兼容 Base URL，本地模型用 `http://127.0.0.1:1234/v1` |
+| `aiApiKey` | `''` | 本地端点可留空；掩码输入 |
+| `aiModel` | `deepseek-chat` | 模型名 |
+| `aiTimeoutMs` | `15000` | 超时（毫秒）。本地小模型建议 15000~30000；开思考要 60000+ |
+| `aiFailOpen` | `true` | AI 故障时放行（本地规则仍兜底） |
+| `aiScope` | `longtail` | `longtail` = 只送本地看不出破坏意图的；`risky` = 全送 |
+| `aiStructured` | `auto` | `auto` / `json_schema` / `json_object` / `off` |
+| `aiNoThink` | `true` | `true` / `false` / `auto`（按命令长度分流） |
+| `aiNoThinkMaxLen` | `100` | `auto` 模式下「短命令」阈值 |
+| `aiExtraBody` | `''` | 追加进请求体的 JSON，用于模型私有参数 |
+
+改完配置后在插件管理里把 `command-safety-guard` 关一次再开即可生效。
+
+## 依赖与安装
+
+`package.json` 里声明了 `@deepseek-ai/schemastery`（约 204 KB，含 `cosmokit` 与
+`@standard-schema/spec`）——这是导出 `Config` 的前提。
+
+**为什么必须装在插件自己的 `node_modules` 里**：本地 bundle 通过 `link:` 安装，
+Node 解析到的是它的真实路径（比如桌面上的开发目录），向上找不到 profile 的
+`node_modules`，宿主包一律 import 失败。出厂包把 schemastery 声明为
+`peerDependencies`，本地开发的 bundle 则必须自带。
+
+```bash
+cd command-safety-guard
+npm install          # 装 node_modules（已 gitignore）
+```
+
+安装进 profile 用 `plugin_manager`，不要手写 profile 的 `package.json`：
+
+```
+plugin_manager install_bundle，target = 插件目录的绝对路径
+```
 
 ## 实现说明
 
@@ -155,10 +201,9 @@ config:
   跟踪 `cd` 后的当前目录，统一展开环境变量与 `~`。
 - 绝对路径会**词法解析 `.` / `..`**：`rm -rf /c/Users/x/AppData/Local/Temp/../../..`
   这类「深层路径 + 回溯」写法会被收敛成 `/c/Users/x` 后判为主目录全删（回溯出根则判盘根）。
+- 配置：`export const Config` 用 schemastery 描述全部配置项，宿主据此校验 + 渲染表单；
+  插件内部还有一层 `normalizeConfig` 兜底，容忍 YAML 里写成字符串的数字与布尔。
 - 健壮性：审查器内部任何异常都放行并记日志，绝不因插件缺陷阻塞工作流。
-- 零依赖：插件不 import 任何宿主包（含 `@deepseek-ai/schemastery`），
-  因为本地 bundle 的真实路径在 profile 的 `node_modules` 之外，import 会直接导致加载失败；
-  代价是插件不出现在设置界面的表单里，配置只能走 `cordis.patch.yml`。
 
 ## 已验证（安装后实机）
 
@@ -193,7 +238,15 @@ config:
 | `rm -rf node_modules` | ✅ 直接放行（长尾范围外，不发请求、零延迟） |
 | `node -e "console.log(...)"` | ✅ AI 判 safe 后放行 |
 
-离线用例台（不属于分发包，在仓库的 `test/` 目录）：
+**Config 校验实机**：把 `mode` 写成非法值 `aii` 再启用插件，激活直接被拒：
+
+```
+command-safety-guard: ValidationError: invalid config:
+  - $.mode expected "local" | "ai" but got "aii" (at mode)
+```
+
+离线用例台（不属于分发包，在仓库的 `test/` 目录）。用例台通过插件真实的
+`Config` schema 校验并补默认值，和宿主的激活路径一致：
 
 ```bash
 node test/test-command-safety-guard.mjs          # 128 条拦截 + 76 条放行 + 12 项边界

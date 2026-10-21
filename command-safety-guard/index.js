@@ -20,6 +20,8 @@
 
 'use strict'
 
+import Schema from '@deepseek-ai/schemastery'
+
 /* ------------------------------------------------------------------ *
  * 常量表
  * ------------------------------------------------------------------ */
@@ -485,6 +487,84 @@ const DEFAULT_CONFIG = {
   aiExtraBody: '',          // 追加进请求体的 JSON，用于模型私有参数
 }
 
+/**
+ * 配置 Schema。宿主在激活插件前用它校验并补全 `config`，
+ * 设置界面也按它渲染表单，所以这里写全描述与默认值。
+ *
+ * 注意：本插件安装为 `link:` 本地 bundle 时，真实路径在 profile 的 node_modules
+ * 之外，Node 向上解析不到宿主包 —— 因此 schemastery 装在插件自己的 node_modules 里
+ * （见 package.json 的 dependencies）。出厂包把它声明为 peerDependencies，
+ * 本地开发 bundle 则必须自带，否则 import 直接失败。
+ */
+export const Config = Schema.object({
+  mode: Schema.union([
+    Schema.const('local').description('纯本地确定性规则，零延迟、无需 API Key（推荐）'),
+    Schema.const('ai').description('本地规则兜底 + 外接 AI 复核长尾命令'),
+  ]).default('local').description('审核模式'),
+
+  action: Schema.union([
+    Schema.const('deny').description('直接拒绝执行并说明原因'),
+    Schema.const('ask').description('弹窗请用户确认，确认后才放行'),
+  ]).default('deny').description('命中灾难级规则时的动作'),
+
+  extraTools: Schema.string()
+    .default('')
+    .description('额外视作「命令执行」而纳入审查的工具名，逗号分隔（内置已覆盖 bash/pwsh/cmd 等）'),
+
+  extraPaths: Schema.string()
+    .default('')
+    .description('额外登记为受保护的路径，逗号分隔，支持 * 通配符'),
+
+  aiBaseUrl: Schema.string()
+    .default('https://api.deepseek.com/v1')
+    .description('OpenAI 兼容接口 Base URL，仅 mode=ai 生效。本地模型用 http://127.0.0.1:1234/v1'),
+
+  aiApiKey: Schema.string()
+    .default('')
+    .role('secret')
+    .description('AI 接口 API Key，仅 mode=ai 生效。aiBaseUrl 指向 localhost / 127.0.0.1 时可留空'),
+
+  aiModel: Schema.string()
+    .default('deepseek-chat')
+    .description('AI 模型名，仅 mode=ai 生效'),
+
+  aiTimeoutMs: Schema.number()
+    .min(1000)
+    .default(15000)
+    .description('AI 复核超时（毫秒）。本地小模型建议 15000~30000；开思考模式要放到 60000 以上'),
+
+  aiFailOpen: Schema.boolean()
+    .default(true)
+    .description('AI 调用失败时是否放行。true=放行并记日志（本地规则仍兜底）；false=拒绝执行'),
+
+  aiScope: Schema.union([
+    Schema.const('longtail').description('只送本地规则看不出破坏意图的命令，日常清理零延迟零打扰（推荐）'),
+    Schema.const('risky').description('所有带破坏性外观的命令都送 AI，更严但每条清理都要等一次推理'),
+  ]).default('longtail').description('送 AI 复核的范围'),
+
+  aiStructured: Schema.union([
+    Schema.const('auto').description('本地端点用 json_schema、远端用 json_object（推荐）'),
+    Schema.const('json_schema').description('强制 json_schema（LM Studio 只认这个）'),
+    Schema.const('json_object').description('强制 json_object（DeepSeek / SiliconFlow 等云端）'),
+    Schema.const('off').description('关闭结构化输出，不推荐：小模型会返回散文'),
+  ]).default('auto').description('是否锁死 AI 输出结构'),
+
+  aiNoThink: Schema.union([
+    Schema.const(true).description('全部关思考：0.9~3.4s，实测 12/12'),
+    Schema.const(false).description('全部开思考：15~90s，能推理更难的情形'),
+    Schema.const('auto').description('按命令长度分流，短命令关思考'),
+  ]).default(true).description('思考开关'),
+
+  aiNoThinkMaxLen: Schema.number()
+    .min(1)
+    .default(100)
+    .description('auto 模式下判定「短命令」的长度阈值（字符数），仅 aiNoThink=auto 生效'),
+
+  aiExtraBody: Schema.string()
+    .default('')
+    .description('追加进 AI 请求体的 JSON 字符串，用于传模型私有参数（思考开关、采样参数等），优先级最高'),
+})
+
 /*
  * 配置项说明（在 profile 的 cordis.patch.yml 中以 config: 传入，见 README.md）：
  *
@@ -519,7 +599,20 @@ const DEFAULT_CONFIG = {
 function normalizeConfig(config) {
   const c = config && typeof config === 'object' ? config : {}
   const str = (v, d) => (typeof v === 'string' && v.trim() ? v.trim() : d)
-  const num = (v, d) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : d)
+  // YAML 里常把数字/布尔写成字符串，这里统一容忍，避免静默落到默认值
+  const num = (v, d) => {
+    const n = typeof v === 'string' ? Number(v.trim()) : v
+    return typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : d
+  }
+  const bool = (v, d) => {
+    if (typeof v === 'boolean') return v
+    if (typeof v === 'string') {
+      const s = v.trim().toLowerCase()
+      if (s === 'true' || s === '1' || s === 'yes') return true
+      if (s === 'false' || s === '0' || s === 'no') return false
+    }
+    return d
+  }
   const list = (v) => {
     if (Array.isArray(v)) return v.map((x) => String(x).trim()).filter(Boolean)
     if (typeof v === 'string') return v.split(',').map((x) => x.trim()).filter(Boolean)
@@ -534,10 +627,10 @@ function normalizeConfig(config) {
     aiApiKey: typeof c.aiApiKey === 'string' ? c.aiApiKey.trim() : '',
     aiModel: str(c.aiModel, DEFAULT_CONFIG.aiModel),
     aiTimeoutMs: num(c.aiTimeoutMs, DEFAULT_CONFIG.aiTimeoutMs),
-    aiFailOpen: c.aiFailOpen === undefined ? true : Boolean(c.aiFailOpen),
+    aiFailOpen: bool(c.aiFailOpen, true),
     aiScope: c.aiScope === 'risky' ? 'risky' : 'longtail',
     aiStructured: ['auto', 'json_schema', 'json_object', 'off'].includes(c.aiStructured) ? c.aiStructured : 'auto',
-    aiNoThink: c.aiNoThink === true || c.aiNoThink === false ? c.aiNoThink : 'auto',
+    aiNoThink: bool(c.aiNoThink, 'auto'),
     aiNoThinkMaxLen: num(c.aiNoThinkMaxLen, DEFAULT_CONFIG.aiNoThinkMaxLen),
     aiExtraBody: typeof c.aiExtraBody === 'string' ? c.aiExtraBody.trim() : '',
   }

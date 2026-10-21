@@ -7,20 +7,14 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-const mkSchema = () => {
-  const s = {}
-  s.default = () => s; s.description = () => s; s.required = () => s; s.role = () => s
-  return s
-}
-globalThis.Schema = {
-  object: () => mkSchema(), union: () => mkSchema(), const: () => mkSchema(),
-  string: () => mkSchema(), number: () => mkSchema(), boolean: () => mkSchema(),
-}
-
 const MODE = process.env.CORPUS_MODE === 'ai' ? 'ai' : 'local'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const BUNDLE = path.join(HERE, '..', 'command-safety-guard', 'index.js')
 const mod = await import(pathToFileURL(BUNDLE).href)
+
+// 走插件真实的 Config schema 做校验 + 补默认值，与宿主的激活路径一致。
+// 不再需要 Schema 全局桩：插件自己从 node_modules 解析 schemastery。
+const cfgOf = (c) => mod.Config(c)
 
 const captured = {}
 const fakeCtx = {
@@ -28,14 +22,14 @@ const fakeCtx = {
   on(event, listener) { captured.listener = listener; return () => {} },
   effect(fn) { const d = fn(); return () => d && d() },
 }
-mod.apply(fakeCtx, MODE === 'ai'
+mod.apply(fakeCtx, cfgOf(MODE === 'ai'
   ? {
       mode: 'ai', action: 'deny',
       aiBaseUrl: 'http://127.0.0.1:1234/v1', aiApiKey: '', aiModel: 'minicpm-v-4.7-1b',
       aiScope: 'longtail', aiStructured: 'json_schema', aiNoThink: 'auto',
       aiNoThinkMaxLen: 100, aiTimeoutMs: 30000, aiFailOpen: true,
     }
-  : { mode: 'local', action: 'deny' })
+  : { mode: 'local', action: 'deny' }))
 
 const tool = 'mcp__fauxnix__bash'
 
