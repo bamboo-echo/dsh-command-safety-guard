@@ -1,21 +1,22 @@
 /**
  * command-safety-guard — 本地命令安全拦截插件（DSH Host plugin）
  *
- * 通过 `tools/pre-execute` 瀑布钩子在命令执行前审查所有命令类工具调用：
+ * 通过 `tools/pre-execute` 瀑布钩子在命令执行前审查所有命令类工具调用，
+ * 拦截「目录被整体删除或清空」的操作并说明原因：
  *
- *   1. 只拦截「灾难级破坏性操作」——命中即拒绝执行并说明原因：
- *      - 系统盘 / 盘根的全量删除（rm -rf /、rm -rf C:\、rd /s /q C:\ …）
- *      - 用户主目录、桌面/文档目录的全量删除（rm -rf ~、Remove-Item -Recurse $env:USERPROFILE …）
- *      - 系统关键目录的全量删除（Windows、System32、Program Files、/etc、/usr …）
- *      - 格式化 / 分区表销毁类命令（format、mkfs.*、diskpart、wipefs、dd of=/dev/sdX …）
- *   2. 日常操作零干扰：普通文件删除、构建输出清理（dist/build/node_modules）、
- *      临时目录清理、git clean、带过滤条件的 find -delete 等一律放行。
- *   3. 两种审核模式（配置项 `mode`）：
- *      - local：纯本地确定性规则，无需任何 API Key（默认）
- *      - ai：本地规则兜底 + 外接 OpenAI 兼容 AI 复核破坏性命令
+ *   - 系统盘 / 盘根的全量删除（rm -rf /、rm -rf C:\、rd /s /q C:\ …）
+ *   - 用户主目录、桌面/文档目录的全量删除（rm -rf ~、Remove-Item -Recurse $env:USERPROFILE …）
+ *   - 系统关键目录的全量删除（Windows、System32、Program Files、/etc、/usr …）
+ *   - 格式化 / 分区表销毁类命令（format、mkfs.*、diskpart、wipefs、dd of=/dev/sdX …）
  *
- * 设计原则：宁可漏报（放行），不可误报（阻断日常操作）。任何内部异常都放行，
- * 绝不因插件自身缺陷阻塞用户的正常工作流。
+ * 放行的：普通文件删除、构建输出清理（dist/build/node_modules）、临时目录清理、
+ * git clean、带过滤条件的 find -delete，以及受保护目录内部的子路径。
+ *
+ * 配置项 `mode` 两种取值：
+ *   - local：纯本地确定性规则，无需任何 API Key（默认）
+ *   - ai：本地规则兜底 + 外接 OpenAI 兼容 AI 复核
+ *
+ * 审查器内部异常一律放行并记日志。
  */
 
 'use strict'
@@ -73,9 +74,8 @@ function isFlagToken(t) {
 const DISK_CMDLETS = new Set(['clear-disk', 'initialize-disk', 'format-volume', 'remove-partition'])
 
 /**
- * 格式化类命令分级：目标是真块设备（/dev/sda、C:）才灾难级；
- * 目标是普通文件（./tmp/fake.img 这类磁盘镜像）属于日常操作，放行——
- * 否则所有拿镜像文件做实验的人都会被拦死。
+ * 格式化类命令分级：目标是真块设备（/dev/sda、C:）才拦；
+ * 目标是普通文件（磁盘镜像）放行。
  */
 function analyzeFormatTool(rawExe, exe, tokens, idx) {
   // diskpart 是磁盘销毁的经典入口，且能执行任意脚本，一律拦
@@ -273,8 +273,8 @@ const ENV_KEYS = [
 
 /**
  * 审计用系统提示词。
- * 针对小模型（1B~8B）做过实测调优：必须给足 dangerous 的 few-shot 样本，
- * 否则模型会把 robocopy /MIR、docker -v 这类手段判成 safe。
+ * 必须给足 dangerous 的 few-shot 样本，否则模型容易把 robocopy /MIR、
+ * docker -v 这类手段判成 safe。
  */
 const AI_SYSTEM_PROMPT = [
   '你是命令安全审计员。只依据命令本身判断，不要臆测目录用途。',
@@ -347,7 +347,7 @@ const AI_SYSTEM_PROMPT = [
   '   即使文本里含 mkfs、rm -rf 等字样也一律判 safe。',
 ].join('\n')
 
-/** 结构化输出的 JSON Schema（LM Studio 走 json_schema，云端走 json_object） */
+/** 结构化输出的 JSON Schema（本地端点走 json_schema，云端走 json_object） */
 const AI_VERDICT_SCHEMA = {
   type: 'object',
   properties: {
@@ -359,7 +359,7 @@ const AI_VERDICT_SCHEMA = {
 }
 
 /** 关思考用的 prefill：已闭合的空 think 段，模型只能从段后继续输出 */
-const NO_THINK_PREFILL = 'imini\n\n</think>\n\n'
+const NO_THINK_PREFILL = '<think>\n\n</think>\n\n'
 
 /** 需要送 AI 复核的「看起来有破坏性」的命令特征（aiScope=risky 时使用） */
 const RISKY_RE = new RegExp([
@@ -437,9 +437,9 @@ const AI_VERDICT_CACHE = new Map()
 const AI_CACHE_LIMIT = 200
 
 /**
- * 「无风险快路」判定：只有又短、又不碰任何受保护路径、又不是无路径破坏工具的命令，
- * 才配走关思考快路。长度本身不是风险代理——`wbadmin delete catalog` 只有 22 字符却很危险，
- * 而一长串 node_modules 清理虽然长却无害，所以要看内容而不是长度。
+ * 「无风险快路」判定：短、不碰受保护路径、不是无路径破坏工具的命令才走关思考快路。
+ * 阈值看内容不看长度——`wbadmin delete catalog` 22 字符但危险，
+ * 一长串 node_modules 清理虽长却无害。
  */
 const PROTECTED_PATH_HINT_RE = new RegExp([
   '(^|[^a-z0-9])(users|home|desktop|documents|downloads|pictures|videos|music|movies|photos',
@@ -498,14 +498,14 @@ const DEFAULT_CONFIG = {
  */
 export const Config = Schema.object({
   mode: Schema.union([
-    Schema.const('local').description('纯本地确定性规则，零延迟、无需 API Key（推荐）'),
+    Schema.const('local').description('纯本地确定性规则，无需 API Key'),
     Schema.const('ai').description('本地规则兜底 + 外接 AI 复核长尾命令'),
   ]).default('local').description('审核模式'),
 
   action: Schema.union([
     Schema.const('deny').description('直接拒绝执行并说明原因'),
-    Schema.const('ask').description('弹窗请用户确认，确认后才放行'),
-  ]).default('deny').description('命中灾难级规则时的动作'),
+    Schema.const('ask').description('弹窗请用户确认后放行'),
+  ]).default('deny').description('命中拦截规则时的动作'),
 
   extraTools: Schema.string()
     .default('')
@@ -538,15 +538,15 @@ export const Config = Schema.object({
     .description('AI 调用失败时是否放行。true=放行并记日志（本地规则仍兜底）；false=拒绝执行'),
 
   aiScope: Schema.union([
-    Schema.const('longtail').description('只送本地规则看不出破坏意图的命令，日常清理零延迟零打扰（推荐）'),
+    Schema.const('longtail').description('只送本地规则看不出破坏意图的命令'),
     Schema.const('risky').description('所有带破坏性外观的命令都送 AI，更严但每条清理都要等一次推理'),
   ]).default('longtail').description('送 AI 复核的范围'),
 
   aiStructured: Schema.union([
-    Schema.const('auto').description('本地端点用 json_schema、远端用 json_object（推荐）'),
-    Schema.const('json_schema').description('强制 json_schema（LM Studio 只认这个）'),
-    Schema.const('json_object').description('强制 json_object（DeepSeek / SiliconFlow 等云端）'),
-    Schema.const('off').description('关闭结构化输出，不推荐：小模型会返回散文'),
+    Schema.const('auto').description('本地端点用 json_schema、远端用 json_object'),
+    Schema.const('json_schema').description('强制 json_schema（部分本地端点只认这个）'),
+    Schema.const('json_object').description('强制 json_object（云端端点）'),
+    Schema.const('off').description('关闭结构化输出，小模型会返回散文'),
   ]).default('auto').description('是否锁死 AI 输出结构'),
 
   aiNoThink: Schema.union([
@@ -578,22 +578,22 @@ export const Config = Schema.object({
  *   aiModel     AI 模型名
  *   aiTimeoutMs AI 复核超时（毫秒）。本地小模型建议 15000~30000；开思考模式要放到 60000 以上
  *   aiFailOpen  AI 调用失败是否放行（true=放行并记日志；false=拒绝执行）
- *   aiScope     longtail（默认）= 只把「本地规则看不出破坏意图」的命令送 AI，日常清理零延迟零打扰；
+ *   aiScope     longtail（默认）= 只把「本地规则看不出破坏意图」的命令送 AI；
  *               risky = 所有带破坏性外观的命令都送 AI（更严，但每条清理都要等一次推理）
  *   aiStructured auto（默认）= 本地端点(localhost/127.0.0.1)用 json_schema、远端用 json_object，锁死输出结构；
- *               json_schema / json_object / off 可强制指定。小模型强烈建议开着，否则它不按 JSON 回答
+ *               json_schema / json_object / off 可强制指定。小模型不开结构化输出就不按 JSON 回答
  *   aiNoThink   true（当前配置）= 全部关思考。false = 全部开思考（15–90s，能推理更难的情形）；
- *               'auto' = 按内容分流。实测见 README「思考开关的实测结论」
+ *               'auto' = 按命令长度分流，短命令关思考
  *   aiNoThinkMaxLen auto 模式下判定「短命令」的长度阈值（默认 100 字符）
  *   aiExtraBody 追加进请求体的 JSON 字符串，用于模型私有参数，例如思考开关：
  *               '{"chat_template_kwargs":{"enable_thinking":false}}'
- *               （注意：LM Studio 的 chat-completions 端点不会把 chat_template_kwargs 传给 GGUF 运行时，
- *                 对 MiniCPM 系列无效；也可用它覆盖 max_tokens / temperature 等，extraBody 优先级最高）
+ *               （部分本地推理端不把 chat_template_kwargs 透传给运行时，该参数会失效；
+ *                 也可用它覆盖 max_tokens / temperature 等，extraBody 优先级最高）
  *
- * 说明：本插件刻意保持「零 import」——不依赖 @deepseek-ai/schemastery 等宿主包，
- * 以免本地 bundle 的真实路径无法解析 profile 的 node_modules 而加载失败。
- * 因此不导出 Config schema，配置由 cordis.patch.yml 的 config 块直接传入，
- * 由下方 normalizeConfig 做校验与兜底。
+ * 说明：插件从自己的 node_modules 导入 @deepseek-ai/schemastery 来导出 Config。
+ * 本地 bundle 走 link: 安装时 Node 解析到真实路径，向上找不到 profile 的 node_modules，
+ * 所以这个依赖必须装在插件目录里而不是靠宿主提供（出厂包把它声明为 peerDependencies）。
+ * normalizeConfig 仍然保留一层兜底，容忍 YAML 里写成字符串的数字与布尔。
  */
 
 function normalizeConfig(config) {
@@ -1913,13 +1913,13 @@ function isDevicePath(p) {
  * AI 复核
  * ------------------------------------------------------------------ */
 
-/** 本地端点（LM Studio / Ollama / vLLM 等）不需要 API Key */
+/** 本地端点（Ollama / vLLM / LM Studio 等）不需要 API Key */
 function isLocalEndpoint(url) {
   return /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|host\.docker\.internal)(:\d+)?(\/|$)/i.test(String(url || ''))
 }
 
 /**
- * 结构化输出：本地端点(LM Studio)只认 json_schema，云端(DeepSeek/OpenAI)用 json_object。
+ * 结构化输出：本地端点只认 json_schema，云端用 json_object。
  * 返回 null 表示不带 response_format。
  */
 function buildResponseFormat(cfg) {
@@ -1939,10 +1939,10 @@ async function aiReview(commands, cfg, logger, noThinkOverride) {
     logger.warn('command-safety-guard: mode=ai 但未配置 aiApiKey，跳过 AI 复核，仅以本地规则判定')
     return null
   }
-  // 关思考有两种机制，按端点选：
-  //   - 本地端点（LM Studio）：chat_template_kwargs 不会透传给 GGUF，只能用 prefill 空 think 块
-  //   - 远端（Qwen3 / SiliconFlow 等）：顶层 `enable_thinking: false`，且能同时保留结构化输出
-  // 注意：`chat_template_kwargs.enable_thinking` 在 SiliconFlow 上会让请求挂住不返回，千万别用。
+  // 关思考有两种机制，按端点类型选：
+  //   - 本地端点：chat_template_kwargs 不透传给推理运行时，只能用 prefill 空 think 块
+  //   - 远端：顶层 `enable_thinking: false`，且能同时保留结构化输出
+  // 注意：`chat_template_kwargs.enable_thinking` 在部分云端端点上会让请求挂住不返回，别用。
   const usePrefill = noThink && isLocalEndpoint(cfg.aiBaseUrl)
   const responseFormat = usePrefill ? null : buildResponseFormat(cfg)
   const messages = [
@@ -1951,7 +1951,7 @@ async function aiReview(commands, cfg, logger, noThinkOverride) {
   ]
   if (usePrefill) {
     // prefill 一个「空思考块」：模型从已闭合的 think 段之后继续生成，等价于关掉思考。
-    // 注意它和 json_schema 互斥（grammar 会拒绝 prefill 里的 think 标签，llama.cpp 报 400）。
+    // 注意它和 json_schema 互斥（grammar 会拒绝 prefill 里的 think 标签，本地推理端会报 400）。
     messages.push({ role: 'assistant', content: NO_THINK_PREFILL })
   }
   let extra = {}
@@ -1973,12 +1973,12 @@ async function aiReview(commands, cfg, logger, noThinkOverride) {
       body: JSON.stringify({
         model: cfg.aiModel,
         temperature: 0,
-        // 小模型开思考时 reasoning 会占掉大量 token，300 会被截断成空 content
+        // 开思考时 reasoning 会占掉大量 token，300 会被截断成空 content
         max_tokens: 1200,
-        // 部分端点（SiliconFlow）在缺少 stream:false 时会把响应挂住不返回
+        // 部分端点在缺少 stream:false 时会把响应挂住不返回
         stream: false,
         messages,
-        // 远端关思考：顶层 enable_thinking（SiliconFlow/Qwen3 的标准做法）
+        // 远端关思考：顶层 enable_thinking
         ...noThink && !usePrefill ? { enable_thinking: false } : {},
         ...responseFormat === null ? {} : { response_format: responseFormat },
         ...extra,
@@ -2048,7 +2048,7 @@ function unescapeJsonString(s) {
  * 解析模型返回的判定。小模型的 JSON 时常不规范（截断、多余文本、字段顺序乱），
  * 所以依次尝试：整体 JSON.parse → 正则抽 verdict/reason → 关键词兜底。
  * jsonOnly=true（关思考、无 grammar 约束）时禁用关键词兜底：认不出 JSON 就放行，
- * 宁可漏审，也不能把解释文字误判成 dangerous。
+ * 避免把模型的解释文字误判成 dangerous。
  */
 function parseVerdict(text, logger, jsonOnly) {
   const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(text)

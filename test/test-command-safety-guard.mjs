@@ -347,11 +347,11 @@ mockFetch('{"verdict":"dangerous","reason":"删除整个用户主目录"}')
 }
 mockFetch('{"verdict":"safe","reason":"项目内依赖清理"}')
 {
-  // 本地规则已能判定的日常清理：默认 longtail 范围下根本不该送 AI（零延迟零打扰）
+  // 本地规则已能判定的日常清理：默认 longtail 范围下不送 AI
   fetchCalls.length = 0
   const res = await run('rm -rf node_modules', { config: aiCfg })
   if (res.kind !== 'allow') { failed++; console.log('✗ AI safe 误拦') }
-  if (fetchCalls.length !== 0) { failed++; console.log('✗ 日常清理被送了 AI（应为零打扰）') }
+  if (fetchCalls.length !== 0) { failed++; console.log('✗ 日常清理被送了 AI') }
 }
 mockFetch('```json\n{"verdict":"dangerous","reason":"格式化了系统盘"}\n```')
 {
@@ -389,7 +389,7 @@ globalThis.fetch = async () => { throw new Error('network down') }
 mockFetch('{"verdict":"dangerous","reason":"脚本内删除用户文档"}')
 {
   const res = await run(LONGTAIL, {
-    config: { mode: 'ai', action: 'deny', aiBaseUrl: 'http://127.0.0.1:1234/v1', aiModel: 'minicpm-v', aiApiKey: '' },
+    config: { mode: 'ai', action: 'deny', aiBaseUrl: 'http://127.0.0.1:1234/v1', aiModel: 'local-model', aiApiKey: '' },
   })
   if (res.kind !== 'deny') { failed++; console.log('✗ 本地端点免 key 未生效') }
   else console.log('  本地端点免 key: 已生效')
@@ -474,6 +474,7 @@ mockFetch('{"verdict":"safe"}')
 }
 globalThis.fetch = realFetch
 
-console.log(`\n拦截用例 ${BLOCK.length + BLOCK2.length} 条 / 放行用例 ${ALLOW.length + ALLOW2.length} 条 + 边界 12 项`)
+console.log(`\n拦截用例 ${BLOCK.length + BLOCK2.length} 条 / 放行用例 ${ALLOW.length + ALLOW2.length} 条`)
+console.log('边界情形与 AI 模式用例见上方逐项输出')
 console.log(failed === 0 ? '✅ 全部通过' : `❌ 失败 ${failed} 项`)
 process.exit(failed === 0 ? 0 : 1)

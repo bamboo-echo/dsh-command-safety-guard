@@ -1,13 +1,4 @@
-# command-safety-guard 的插入行。
-#
-# 配置不在这个文件里 —— 声明了 Config schema 之后，宿主会：
-#   1. 激活时用 Config 校验并补全 config（非法值直接报错，不再静默落默认值）
-#   2. 在「设置 → 插件」里按 Config 渲染表单，可直接在界面上改
-#
-# 这里保持 `config: {}` 即可，全部走默认值（mode: local，纯本地规则，零密钥）。
-# 想改配置有两个地方：
-#   - 设置界面：宿主写进 profile 的 cordis.patch.yml（推荐，密钥不会进版本库）
-#   - 本文件：直接写 config，但这是受版本控制的文件，别把 API Key 填在这里
+# 插入行。配置在设置界面或 profile 的 cordis.patch.yml 里改。
 - insert:
     - id: command-safety-guard
       name: '@local/dsh-command-safety-guard'

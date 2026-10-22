@@ -2,12 +2,12 @@
 
 本地命令安全拦截插件（DeepSeek Harness / Cordis Host 插件）。
 
-在命令执行前审查所有命令类工具调用（`bash` / `pwsh` / `cmd` / 持久 shell 等），
-**只拦截灾难级破坏性操作**，日常操作零干扰。
+挂在 `tools/pre-execute` 瀑布上，审查所有命令类工具调用（`bash` / `pwsh` / `cmd` /
+持久 shell 等）的参数。
 
 ## 拦截范围（命中即拒绝）
 
-一律以「**目录本身被整体删除 / 清空**」为判据；目录内部的单个文件或子目录是日常操作，放行。
+判据是「目录本身被整体删除 / 清空」。目录内部的单个文件或子目录是日常操作，放行。
 
 | 类别 | 例子 |
 | --- | --- |
@@ -26,7 +26,7 @@
 | sdelete 覆写受保护目录 | `sdelete -p 3 -s ~/Documents`（`-z` 只清零空闲空间，放行） |
 | 循环 / 管道批量删除 | `for d in ~/Documents; do rm -rf "$d"; done`、`for /d %d in (C:\Users\x\*) do @rd /s /q "%d"`、`ls ~/Documents \| xargs rm -rf`、`echo 'rm -rf ~/Documents' \| bash` |
 
-## 放行范围（零干扰）
+## 放行范围
 
 - 普通文件删除、单目录删除（非递归）
 - 构建输出与依赖清理：`dist`、`build`、`node_modules`、`\.next`、`target`、`out`、`coverage`、`.cache`
@@ -43,19 +43,19 @@
 ### 1. local（默认，无需任何 API Key）
 
 纯本地确定性规则：解析命令 → 展开 `~` / `$env:` / `%VAR%` → 词法解析 `.`/`..` → 路径分级判定。
-误报防护：只删不递归的不拦；`git clean` 默认放行；`find` 带过滤条件不拦；
-受保护目录内部的子路径一律放行。宁可漏报，不误报。
-**响应延迟 = 0，结果可复现。**
+不拦的情形：非递归删除、`git clean`、带过滤条件的 `find -delete`、受保护目录内部的子路径。
+审查器内部出错时放行并记日志，不阻塞工作流。
 
 ### 2. ai（本地规则兜底 + 外接 AI 复核）
 
-本地规则先拦灾难级命令（这一层永远生效，AI 挂不挂都一样）；
-随后只把「**本地规则看不出破坏意图**」的命令送 AI 二次复核（默认 `aiScope: longtail`）——
-例如用 `python -c "shutil.rmtree(...)"` 内联删数据、`robocopy /MIR` 镜像清空、
-`docker run -v <宿主目录>`、变量拼出来的路径、带过滤条件的 `find -delete`，
-以及服务级数据销毁（`DROP DATABASE`、`redis-cli FLUSHALL`、`terraform destroy`、
-`aws s3 rm --recursive`、`kubectl delete pvc --all`、`mdadm --zero-superblock` 等）。
-日常清理（`rm -rf node_modules` 这类）根本不送 AI，**零延迟、零打扰**。
+本地规则先拦灾难级命令，这一层与 AI 是否可用无关。之后只把本地规则看不出破坏意图的
+命令送 AI 复核（默认 `aiScope: longtail`）——`python -c "shutil.rmtree(...)"` 内联删数据、
+`robocopy /MIR` 镜像清空、`docker run -v <宿主目录>`、变量拼出来的路径、
+带过滤条件的 `find -delete`，以及服务级数据销毁（`DROP DATABASE`、`redis-cli FLUSHALL`、
+`terraform destroy`、`aws s3 rm --recursive`、`kubectl delete pvc --all`、
+`mdadm --zero-superblock` 等）。日常清理不送 AI。
+
+端点故障时按 `aiFailOpen` 决定放行还是拒绝；放行会退回纯本地规则，上述长尾手段随之漏掉。
 
 | | local | ai |
 | --- | --- | --- |
@@ -65,93 +65,36 @@
 | 误拦日常操作的风险 | 无（确定性） | 有，取决于模型水平；`aiFailOpen` 控制 AI 故障时是否放行 |
 | 可复现性 | 完全可复现 | 同一条命令可能两次结论不同 |
 
-本地模型（LM Studio / Ollama）配置示例：
-
-```yaml
-config:
-  mode: ai
-  action: deny
-  aiBaseUrl: 'http://127.0.0.1:1234/v1'   # 本地端点无需 aiApiKey
-  aiModel: 'minicpm-v-4.7-1b'
-  aiScope: longtail        # 只送本地规则看不见的（默认）
-  aiStructured: json_schema
-  aiTimeoutMs: 25000
-  aiFailOpen: true
-```
-
-`aiExtraBody` 原样合并进请求体，用来传模型的私有参数（思考开关、采样参数等），
-也可用它覆盖 `max_tokens` / `temperature`。
-
-### 小模型接进来的五个坑（都已处理）
-
-1. **不按 JSON 回答**：小模型会返回英文散文。必须开结构化输出——
-   LM Studio 只认 `json_schema`（不认 `json_object`，会报 400），
-   云端（DeepSeek / SiliconFlow）用 `json_object`；`aiStructured: auto` 会按端点自动选。
-2. **思考内容吃掉 token 预算**：`max_tokens: 300` 会被 reasoning 占满，返回空 content。
-   已提到 1200。
-3. **`chat_template_kwargs.enable_thinking` 在 SiliconFlow 上会让请求挂死**：
-   45 秒无响应。正确写法是**顶层 `enable_thinking: false`**（Qwen3 标准做法）。
-   在 LM Studio 上该参数则完全不透传给 GGUF，只能用 prefill 空 think 块。
-4. **不带 `stream: false` 也会挂**：SiliconFlow 在缺少该字段时会把响应挂住不返回，已永远带上。
-5. **中文被双重转义 / 输出乱码**：模型会把中文写成字面 `\uXXXX`，或吐一串希腊字母乱码。
-   解析层已做反转义 + 乱码清洗，失败时退回通用理由，不会把乱码抛给用户。
-
-### 思考开关的实测结论（Qwen3-8B @ SiliconFlow，12 条用例）
-
-| 配置 | 延迟 | 结果 |
-| --- | --- | --- |
-| 开思考 | **15–90s** | 9/9 |
-| 关思考 + 旧提示词 | 0.9–3.4s | 会把 `rm -rf ./dist` 误判成 dangerous |
-| 关思考 + 补「判断依据是目标路径，不是手段」策略句 | **0.9–3.4s** | **11/12** |
-| 关思考 + 策略句 + `analyzeContainerRun` 确定性补丁 | **0.0–9.3s** | **12/12** |
-
-关思考唯一漏的是 `docker run -v <宿主目录>:…` ——需要推理挂载映射。
-这条已由确定性规则补上：解析 `-v` / `--volume` **左侧的宿主路径**直接判定，
-不经过模型，0.0s 出结果。
-
-所以当前配置 `aiNoThink: true`（全部关思考）在又快又准之间取到了平衡点。
-想换回开思考把 `aiNoThink` 设成 `false`，代价是每条 15–90 秒。
+`aiExtraBody` 原样合并进请求体，用于传模型的私有参数（思考开关、采样参数等），
+也可覆盖 `max_tokens` / `temperature`。
 
 ## 配置
 
-插件导出了 `Config` schema，所以宿主会在两处用它：
+插件导出 `Config` schema，宿主在两处用它：激活时校验（非法值直接报错，例如
+`$.mode expected "local" | "ai" but got "aii"`），以及在「设置 → 插件」渲染表单，
+`aiApiKey` 是掩码输入。
 
-1. **激活时校验** —— 非法值直接报错，不再静默落到默认值：
-   ```
-   command-safety-guard: ValidationError: invalid config:
-     - $.mode expected "local" | "ai" but got "aii" (at mode)
-   ```
-2. **设置界面渲染表单** —— 「设置 → 插件」里可以直接改，`aiApiKey` 是掩码输入。
-
-`cordis.patch.yml` 只保留插入行，`config` 留空走全部默认值（`mode: local`，纯本地规则，零密钥）。
-改配置有两个去处：
+`cordis.patch.yml` 只有插入行，`config` 留空走默认值（`mode: local`）。配置写在
+profile 的 `cordis.patch.yml` 里（本机私有，不进版本库）：
 
 ```yaml
-# 1) profile 层（推荐，本机私有、不进版本库）：
-#    <DSH 配置目录>/profiles/<profile>/cordis.patch.yml
+# <DSH 配置目录>/profiles/<profile>/cordis.patch.yml
 - id: command-safety-guard
   name: "@local/dsh-command-safety-guard"
   config:
     mode: ai
     action: deny
-    aiBaseUrl: 'https://api.siliconflow.cn/v1'
-    aiApiKey: '在这里填，别提交进版本库'
-    aiModel: 'Qwen/Qwen3-8B'
+    aiBaseUrl: 'https://api.example.com/v1'
+    aiApiKey: '<key>'
+    aiModel: '<模型名>'
     aiScope: longtail
     aiStructured: json_object
     aiNoThink: true
     aiTimeoutMs: 60000
     aiFailOpen: true
-
-# 2) bundle 层（会进版本库，别放密钥）：
-#    command-safety-guard/cordis.patch.yml
-- insert:
-    - id: command-safety-guard
-      name: '@local/dsh-command-safety-guard'
-      config: {}
 ```
 
-全部配置项与默认值：
+配置项与默认值：
 
 | 配置项 | 默认 | 说明 |
 | --- | --- | --- |
@@ -174,40 +117,35 @@ config:
 
 ## 依赖与安装
 
-`package.json` 里声明了 `@deepseek-ai/schemastery`（约 204 KB，含 `cosmokit` 与
-`@standard-schema/spec`）——这是导出 `Config` 的前提。
+`package.json` 声明 `@deepseek-ai/schemastery`（约 204 KB，含 `cosmokit` 与
+`@standard-schema/spec`），导出 `Config` 需要它。
 
-**为什么必须装在插件自己的 `node_modules` 里**：本地 bundle 通过 `link:` 安装，
-Node 解析到的是它的真实路径（比如桌面上的开发目录），向上找不到 profile 的
-`node_modules`，宿主包一律 import 失败。出厂包把 schemastery 声明为
-`peerDependencies`，本地开发的 bundle 则必须自带。
+装在插件自己的 `node_modules` 里而不是靠 profile 提供：本地 bundle 走 `link:` 安装，
+Node 解析到的是真实路径（开发目录），向上找不到 profile 的 `node_modules`，宿主包
+import 一律失败。出厂包把 schemastery 声明为 `peerDependencies`，本地开发的 bundle 得自带。
 
 ```bash
 cd command-safety-guard
-npm install          # 装 node_modules（已 gitignore）
+npm install
 ```
 
-安装进 profile 用 `plugin_manager`，不要手写 profile 的 `package.json`：
-
-```
-plugin_manager install_bundle，target = 插件目录的绝对路径
-```
+装进 profile 用 `plugin_manager`（`install_bundle`，target = 插件目录的绝对路径）。
 
 ## 实现说明
 
-- 钩子：`tools/pre-execute` 瀑布（返回 `{ kind: 'deny', reason }` / `{ kind: 'ask', reason }`，其余情况返回 `next()`）。
+- 钩子：`tools/pre-execute` 瀑布，返回 `{ kind: 'deny', reason }` / `{ kind: 'ask', reason }`，其余情况 `next()`。
 - 命令行解析：引号感知的 shell 词法切分，支持 `&&`、`||`、`;`、`|`、换行分段，
   逐段识别删除类 / 格式化类命令，处理 `bash -c` / `cmd /c` / `powershell -Command` 嵌套，
   跟踪 `cd` 后的当前目录，统一展开环境变量与 `~`。
-- 绝对路径会**词法解析 `.` / `..`**：`rm -rf /c/Users/x/AppData/Local/Temp/../../..`
-  这类「深层路径 + 回溯」写法会被收敛成 `/c/Users/x` 后判为主目录全删（回溯出根则判盘根）。
-- 配置：`export const Config` 用 schemastery 描述全部配置项，宿主据此校验 + 渲染表单；
-  插件内部还有一层 `normalizeConfig` 兜底，容忍 YAML 里写成字符串的数字与布尔。
-- 健壮性：审查器内部任何异常都放行并记日志，绝不因插件缺陷阻塞工作流。
+- 绝对路径做词法 `.` / `..` 解析：`rm -rf /c/Users/x/AppData/Local/Temp/../../..`
+  收敛成 `/c/Users/x` 后判为主目录全删，回溯出根则判盘根。
+- `export const Config` 描述全部配置项，宿主据此校验 + 渲染表单；插件内还有一层
+  `normalizeConfig` 兜底，容忍 YAML 里写成字符串的数字与布尔。
+- 审查器内部异常一律放行并记日志。
 
 ## 已验证（安装后实机）
 
-安装到 desktop profile 后用真实工具调用验证过：
+装进 desktop profile 后用真实工具调用验证过，期望拦截的用例都指向不存在的路径：
 
 | 命令 | 结果 |
 | --- | --- |
@@ -228,32 +166,35 @@ plugin_manager install_bundle，target = 插件目录的绝对路径
 | `pwsh -Command "Remove-Item -Recurse -Force C:\Users\…"` | ⛔ 拦截（嵌套 shell） |
 | `rd /s /q C:\Users\…` | ⛔ 拦截（cmd 开关形态） |
 
-**AI 层实机（mode=ai + MiniCPM-V 4.7 1B @ 127.0.0.1:1234）**：
+AI 层（mode=ai，本地端点）实机：
 
 | 命令 | 结果 |
 | --- | --- |
 | `node -e "fs.rmSync('…/Pictures',{recursive:true})"` | ⛔ AI 拦截（本地规则看不出） |
 | `robocopy … /MIR` | ⛔ AI 拦截 |
 | `docker run -v C:\:/host alpine rm -rf /host/Users/…` | ⛔ AI 拦截 |
-| `rm -rf node_modules` | ✅ 直接放行（长尾范围外，不发请求、零延迟） |
+| `rm -rf node_modules` | ✅ 直接放行（长尾范围外，不发请求） |
 | `node -e "console.log(...)"` | ✅ AI 判 safe 后放行 |
 
-**Config 校验实机**：把 `mode` 写成非法值 `aii` 再启用插件，激活直接被拒：
+本地端点上 `aiNoThink: true` 走 prefill 压思考，代价是拿不到结构化输出
+（grammar 会拒绝 think 标签），模型返回的散文由解析层的关键词兜底。远端端点用
+顶层 `enable_thinking: false`，可以同时保留 `response_format`。
+
+Config 校验：把 `mode` 写成 `aii` 再启用插件，激活被拒：
 
 ```
 command-safety-guard: ValidationError: invalid config:
   - $.mode expected "local" | "ai" but got "aii" (at mode)
 ```
 
-离线用例台（不属于分发包，在仓库的 `test/` 目录）。用例台通过插件真实的
-`Config` schema 校验并补默认值，和宿主的激活路径一致：
+离线用例台在仓库的 `test/` 目录。用例台通过插件真实的 `Config` schema 校验并补默认值，
+与宿主的激活路径一致：
 
 ```bash
-node test/test-command-safety-guard.mjs          # 128 条拦截 + 76 条放行 + 12 项边界
+node test/test-command-safety-guard.mjs          # 128 条拦截 + 76 条放行，另有边界与 AI 模式用例
 node test/matrix-command-safety-guard.mjs local  # 285 条分层矩阵（纯本地规则）
 node test/matrix-command-safety-guard.mjs ai     # 同上，实机跑 AI 层
 node test/run-corpus.mjs <语料.json> ...         # 外部语料跑分，CORPUS_MODE=ai 跑 AI 层
 ```
 
-用例台只驱动插件的 `tools/pre-execute` 监听器，**不执行任何命令**。
-所有期望「拦截」的用例都指向不存在的路径，即使判定失误也不会造成破坏。
+用例台只驱动 `tools/pre-execute` 监听器，不执行命令；期望拦截的用例都指向不存在的路径。

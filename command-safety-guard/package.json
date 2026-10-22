@@ -2,7 +2,7 @@
   "name": "@local/dsh-command-safety-guard",
   "version": "1.0.0",
   "private": true,
-  "description": "本地命令安全拦截：pre-execute 钩子拦截灾难级破坏性命令（系统盘根目录/用户主目录全量删除、格式化），日常删除零干扰",
+  "description": "本地命令安全拦截：pre-execute 钩子拦截灾难级破坏性命令（系统盘根目录/用户主目录全量删除、格式化），日常删除不受影响",
   "type": "module",
   "main": "index.js",
   "exports": {

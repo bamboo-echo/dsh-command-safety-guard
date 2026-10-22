@@ -25,7 +25,7 @@ const fakeCtx = {
 mod.apply(fakeCtx, cfgOf(MODE === 'ai'
   ? {
       mode: 'ai', action: 'deny',
-      aiBaseUrl: 'http://127.0.0.1:1234/v1', aiApiKey: '', aiModel: 'minicpm-v-4.7-1b',
+      aiBaseUrl: 'http://127.0.0.1:1234/v1', aiApiKey: '', aiModel: 'local-model',
       aiScope: 'longtail', aiStructured: 'json_schema', aiNoThink: 'auto',
       aiNoThinkMaxLen: 100, aiTimeoutMs: 30000, aiFailOpen: true,
     }
