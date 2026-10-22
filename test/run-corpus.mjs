@@ -31,7 +31,8 @@ mod.apply(fakeCtx, cfgOf(MODE === 'ai'
     }
   : { mode: 'local', action: 'deny' }))
 
-const tool = 'mcp__fauxnix__bash'
+// 语料是 bash 语法，用通用工具名。插件不依赖特定 MCP 服务器。
+const tool = 'bash'
 
 async function runFile(file) {
   let raw = readFileSync(file, 'utf8').trim()

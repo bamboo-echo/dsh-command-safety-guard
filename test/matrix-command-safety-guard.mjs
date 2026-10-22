@@ -54,8 +54,9 @@ const X = 'csg-nonexistent-user-xyz123'   // 不存在的用户，保证误放�
 
 /* ------------------------------------------------------------------ */
 const CASES = []
-const block = (cmd, by, tool = 'mcp__fauxnix__bash') => CASES.push({ cmd, by, tool, want: 'deny' })
-const allow = (cmd, by, tool = 'mcp__fauxnix__bash') => CASES.push({ cmd, by, tool, want: 'allow' })
+// 默认工具名用通用的 bash。插件按关键词匹配工具名，不依赖特定 MCP 服务器。
+const block = (cmd, by, tool = 'bash') => CASES.push({ cmd, by, tool, want: 'deny' })
+const allow = (cmd, by, tool = 'bash') => CASES.push({ cmd, by, tool, want: 'allow' })
 
 /* ===== 1. 盘根 / 系统根 ===== */
 for (const c of [

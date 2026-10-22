@@ -509,7 +509,7 @@ export const Config = Schema.object({
 
   extraTools: Schema.string()
     .default('')
-    .description('额外视作「命令执行」而纳入审查的工具名，逗号分隔（内置已覆盖 bash/pwsh/cmd 等）'),
+    .description('额外视作「命令执行」而纳入审查的工具名，逗号分隔。内置按关键词匹配（bash/pwsh/cmd/shell/terminal 等），名字里没有这些关键词的工具用这项补上'),
 
   extraPaths: Schema.string()
     .default('')
@@ -756,7 +756,6 @@ function extractCommands(exec, cfg) {
   let shell = 'bash'
   if (name.includes('pwsh') || name.includes('powershell')) shell = 'pwsh'
   else if (name.includes('cmd')) shell = 'cmd'
-  else if (name.includes('fauxnix_translate')) shell = 'none'
 
   const texts = collectCommandStrings(exec.arguments)
   return texts.map((text) => ({ text, shell }))

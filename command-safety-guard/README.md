@@ -2,8 +2,24 @@
 
 本地命令安全拦截插件（DeepSeek Harness / Cordis Host 插件）。
 
-挂在 `tools/pre-execute` 瀑布上，审查所有命令类工具调用（`bash` / `pwsh` / `cmd` /
-持久 shell 等）的参数。
+挂在 `tools/pre-execute` 瀑布上，在命令执行前审查命令类工具的参数。
+
+## 工具名怎么认
+
+插件不绑定任何特定 MCP 服务器，按工具名里的关键词判断是否属于「命令执行」：
+`bash` / `sh` / `zsh` / `pwsh` / `powershell` / `cmd` / `shell` / `console` / `terminal`。
+
+所以 DSH 自带的 `pwsh` 直接覆盖，MCP 服务器的 `mcp__<server>__bash` 这类前缀名也覆盖。
+名字里没有这些关键词的工具（比如某个自定义的 `exec_task`）用配置项 `extraTools`
+补上，逗号分隔。
+
+非命令类工具（`read` / `glob` / `grep` / `write` / `edit`）不会被审查，
+即使参数文本里含 `rm -rf` 之类字样。参数里优先取 `command` / `script` / `text`
+等键承载的命令行；其他字段（例如 `pwsh` 必填的 `description`）不当命令分析。
+
+命令行文本按工具名推断 shell：名字含 `pwsh` / `powershell` 按 PowerShell 解析，
+含 `cmd` 按 cmd 解析，其余按 bash 解析。反斜杠在 bash 里是转义符、在
+PowerShell / cmd 里是路径分隔符，两种语义都会跑一遍，取先命中的结果。
 
 ## 拦截范围（命中即拒绝）
 

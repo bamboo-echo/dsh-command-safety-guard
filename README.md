@@ -1,7 +1,11 @@
 # dsh-command-safety-guard
 
-DeepSeek Harness 插件。挂在 `tools/pre-execute` 瀑布上，在命令执行前审查
-bash / pwsh / cmd 等工具的参数。
+DeepSeek Harness 插件。挂在 `tools/pre-execute` 瀑布上，在命令执行前审查命令类工具的参数。
+
+不绑定特定 MCP 服务器：按工具名里的关键词（`bash` / `pwsh` / `cmd` / `shell` /
+`terminal` 等）判断是否属于命令执行，DSH 自带的 `pwsh` 与 `mcp__<server>__bash`
+这类前缀名都覆盖；认不出的用配置项 `extraTools` 补上。`read` / `write` / `glob`
+这类非命令工具不审查。
 
 判据是「目录本身被整体删除或清空」。目录内部的单个文件和子目录属于日常操作，放行。
 默认 `mode: local`，纯本地确定性规则，不需要 API Key。设成 `ai` 会额外把本地规则

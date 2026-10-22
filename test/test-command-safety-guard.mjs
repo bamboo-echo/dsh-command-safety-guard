@@ -36,7 +36,10 @@ mod.apply(fakeCtx, cfgOf({ mode: 'local', action: 'deny' }))
 const listener = captured.listener
 if (!listener) throw new Error('未能捕获 tools/pre-execute 监听器')
 
-const run = async (command, { tool = 'mcp__fauxnix__bash', args, config } = {}) => {
+// 默认用 DSH 自带的 pwsh 工具名。插件不依赖任何特定 MCP 服务器，
+// 工具名按关键词匹配（bash/sh/pwsh/powershell/cmd/shell/console/terminal），
+// 认不出的用 extraTools 配置补上。
+const run = async (command, { tool = 'pwsh', args, config } = {}) => {
   if (config) {
     captured.listener = null
     mod.apply(fakeCtx, cfgOf(config))
@@ -292,12 +295,55 @@ for (const [cmd, tool] of BLOCK2) await check(cmd, tool, 'deny')
 for (const [cmd, tool] of ALLOW2) await check(cmd, tool, 'allow')
 
 /* ---- 边界情形 ---- */
-// 非命令类工具一律不审查
+// 工具名匹配：插件按关键词认工具，不绑定任何特定 MCP 服务器
+// DSH 自带 pwsh；装了 MCP 服务器的会是 mcp__<server>__bash 之类；认不出的用 extraTools
 {
-  const res = await run('', { tool: 'read', args: { file_path: 'C:/x' } })
-  if (res.kind !== 'allow') { failed++; console.log('✗ read 工具被误拦') }
+  const D = 'rm -rf ~/Documents'
+  const seen = []
+  for (const tool of ['pwsh', 'bash', 'sh', 'zsh', 'powershell', 'cmd',
+                      'mcp__fauxnix__bash', 'mcp__fauxnix__bash_batch',
+                      'mcp__any-server__bash', 'my_shell_tool']) {
+    seen.push(await run(D, { tool, config: { mode: 'local', action: 'deny', extraTools: 'my_shell_tool' } }))
+  }
+  const miss = seen.filter((r) => r.kind !== 'deny').length
+  if (miss > 0) { failed++; console.log(`✗ ${miss}/10 个工具名没被识别为命令执行工具`) }
+  else console.log('  工具名匹配: 10 种命名形态全部识别')
 }
-// bash_batch：任一子命令命中即拦
+// 非命令类工具一律不审查（read / glob / grep / write 都不该被误拦）
+{
+  const miss = []
+  for (const [tool, args] of [
+    ['read', { file_path: 'C:/x' }],
+    ['glob', { pattern: '*.ts' }],
+    ['grep', { pattern: 'rm -rf' }],
+    ['write', { file_path: 'C:/x', content: 'rm -rf /' }],
+    ['edit', { file_path: 'C:/x', old_string: 'rm -rf /', new_string: 'x' }],
+  ]) {
+    const res = await run('', { tool, args })
+    if (res.kind !== 'allow') miss.push(tool)
+  }
+  if (miss.length) { failed++; console.log(`✗ 非命令工具被误拦: ${miss.join(', ')}`) }
+  else console.log('  非命令工具: read/glob/grep/write/edit 均不审查')
+}
+// pwsh 的参数里 description 是必填项，不能被当成命令行来分析
+{
+  const res = await run('', {
+    tool: 'pwsh',
+    args: { description: 'Delete the whole user profile', command: 'ls' },
+  })
+  if (res.kind !== 'allow') { failed++; console.log('✗ pwsh 的 description 被当成了命令') }
+  else console.log('  pwsh description 字段: 不当命令分析')
+}
+// 反过来：command 字段里的危险命令照样要拦
+{
+  const res = await run('', {
+    tool: 'pwsh',
+    args: { description: '列出目录', command: 'Remove-Item -Recurse -Force ~/Documents' },
+  })
+  if (res.kind !== 'deny') { failed++; console.log('✗ pwsh 带 description 时 command 未拦截') }
+  else console.log('  pwsh command 字段: 正常拦截')
+}
+// 批次工具：任一子命令命中即拦
 {
   const res = await run('', {
     tool: 'mcp__fauxnix__bash_batch',
